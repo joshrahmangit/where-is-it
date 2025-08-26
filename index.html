@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>What is it? Where is it?</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; background: #f9fafb; }
+    h1 { text-align: center; }
+    .toolbar { display: flex; justify-content: center; margin-bottom: 20px; gap: 10px; flex-wrap: wrap; }
+    #searchBar { flex: 1; padding: 8px; font-size: 1em; min-width: 200px; }
+    button { padding: 8px 12px; font-size: 1em; cursor: pointer; }
+    .danger { background:#fee2e2; border:1px solid #ef4444; color:#991b1b; }
+    .primary { background:#dcfce7; border:1px solid #22c55e; color:#065f46; }
+    .tool-card { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; border-radius: 6px; background: #fff; }
+    .tool-card img { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; background:#e5e7eb; }
+    .tool-info { flex: 1; }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); justify-content: center; align-items: center; }
+    .modal-content { background: white; padding: 20px; max-width: 420px; width: 92%; border-radius: 8px; }
+    .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap; }
+    .voice-btn { background: #eee; border-radius: 50%; width: 32px; height: 32px; display: inline-flex; justify-content: center; align-items: center; margin-left: 4px; }
+    .muted { color:#6b7280; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>What is it? Where is it?</h1>
+  <div class="toolbar">
+    <input id="searchBar" placeholder="Search tool by name...">
+    <button id="voiceSearchBtn" class="voice-btn" title="Speak search">🎤</button>
+    <button id="addBtn" class="primary">Add Tool</button>
+    <button id="exportBtn">Export</button>
+    <button id="importBtn">Import</button>
+    <input type="file" id="importFile" style="display:none"/>
+  </div>
+  <div id="toolList"></div>
+
+  <!-- Add/Edit Tool Modal -->
+  <div class="modal" id="toolModal">
+    <div class="modal-content">
+      <h2 id="modalTitle">Add Tool</h2>
+      <form id="toolForm">
+        <label>Tool name:<br>
+          <input type="text" id="toolName" required> <button type="button" class="voice-btn" id="voiceName" title="Speak name">🎤</button>
+        </label><br><br>
+        <label>Location:<br>
+          <input type="text" id="toolLocation" required> <button type="button" class="voice-btn" id="voiceLocation" title="Speak location">🎤</button>
+        </label><br><br>
+        <label>Notes:<br>
+          <textarea id="toolNotes"></textarea> <button type="button" class="voice-btn" id="voiceNotes" title="Speak notes">🎤</button>
+        </label><br><br>
+        <label>Photo:<br><input type="file" id="toolImage" accept="image/*"></label>
+        <div class="muted">Leave photo empty when editing to keep the current picture.</div>
+        <div class="modal-actions">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="cancelBtn">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Tool Detail Modal -->
+  <div class="modal" id="detailModal">
+    <div class="modal-content">
+      <h2 id="detailName"></h2>
+      <p><strong>Location:</strong> <span id="detailLocation"></span></p>
+      <p><strong>Notes:</strong> <span id="detailNotes"></span></p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <img id="detailImage" src="" alt="" style="max-width:100%; height:auto; border-radius:6px; display:none; border:1px solid #ddd;">
+      </div>
+      <div class="modal-actions">
+        <button id="copyLocationBtn">Copy Location</button>
+        <button id="editBtn" class="primary">Edit</button>
+        <button id="deleteBtn" class="danger">Delete</button>
+        <button id="closeDetailBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let tools = JSON.parse(localStorage.getItem("tools")||"[]");
+    let editingIndex = null;
+    let viewingIndex = null;
+
+    const toolList = document.getElementById("toolList");
+    const toolModal = document.getElementById("toolModal");
+    const detailModal = document.getElementById("detailModal");
+
+    function renderTools(){
+      toolList.innerHTML = "";
+      tools.forEach((t,i)=>{
+        const card = document.createElement("div");
+        card.className = "tool-card";
+        const img = document.createElement("img");
+        img.src = t.image||"";
+        img.alt = t.name?.[0] || "";
+        const info = document.createElement("div");
+        info.className = "tool-info";
+        info.innerHTML = `<strong>${escapeHtml(t.name)}</strong><br>${escapeHtml(t.location)}`;
+        card.appendChild(img);
+        card.appendChild(info);
+        card.onclick = ()=> showDetail(i);
+        toolList.appendChild(card);
+      });
+      localStorage.setItem("tools", JSON.stringify(tools));
+    }
+
+    function escapeHtml(s){ return (s||"").replace(/[&<>\"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' }[m])); }
+
+    function showModal(m){ m.style.display="flex"; }
+    function closeModal(m){ m.style.display="none"; }
+
+    document.getElementById("addBtn").onclick=()=>{
+      editingIndex=null;
+      document.getElementById("toolForm").reset();
+      document.getElementById("modalTitle").innerText="Add Tool";
+      showModal(toolModal);
+    };
+    document.getElementById("cancelBtn").onclick=()=>closeModal(toolModal);
+
+    document.getElementById("toolForm").onsubmit=e=>{
+      e.preventDefault();
+      const name=document.getElementById("toolName").value.trim();
+      const location=document.getElementById("toolLocation").value.trim();
+      const notes=document.getElementById("toolNotes").value.trim();
+      const file=document.getElementById("toolImage").files[0];
+      if(!name || !location){ alert("Please enter a name and a location."); return; }
+      if(file){
+        const r=new FileReader();
+        r.onload=()=>doSave(name,location,notes,r.result);
+        r.readAsDataURL(file);
+      } else {
+        doSave(name,location,notes,null);
+      }
+    };
+
+    function doSave(name,location,notes,imgData){
+      if(editingIndex!=null){
+        const prev=tools[editingIndex]||{};
+        tools[editingIndex]={...prev,name,location,notes,image:(imgData!==null?imgData:prev.image||null)};
+      } else {
+        tools.push({name,location,notes,image:imgData});
+      }
+      localStorage.setItem("tools", JSON.stringify(tools));
+      renderTools();
+      closeModal(toolModal);
+    }
+
+    function showDetail(i){
+      viewingIndex=i;
+      const t=tools[i];
+      document.getElementById("detailName").innerText=t.name||"";
+      document.getElementById("detailLocation").innerText=t.location||"";
+      document.getElementById("detailNotes").innerText=t.notes||"";
+      const di=document.getElementById("detailImage");
+      if(t.image){ di.src=t.image; di.style.display="block"; } else { di.style.display="none"; }
+      showModal(detailModal);
+    }
+    document.getElementById("closeDetailBtn").onclick=()=>closeModal(detailModal);
+    document.getElementById("copyLocationBtn").onclick=()=>navigator.clipboard.writeText(document.getElementById("detailLocation").innerText);
+
+    document.getElementById("editBtn").onclick=()=>{
+      if(viewingIndex==null)return;
+      const t=tools[viewingIndex];
+      editingIndex=viewingIndex;
+      document.getElementById("modalTitle").innerText="Edit Tool";
+      document.getElementById("toolName").value=t.name||"";
+      document.getElementById("toolLocation").value=t.location||"";
+      document.getElementById("toolNotes").value=t.notes||"";
+      document.getElementById("toolImage").value="";
+      closeModal(detailModal);
+      showModal(toolModal);
+    };
+    document.getElementById("deleteBtn").onclick=()=>{
+      if(viewingIndex==null)return;
+      if(confirm(`Delete "${tools[viewingIndex].name}"?`)){
+        tools.splice(viewingIndex,1);
+        localStorage.setItem("tools", JSON.stringify(tools));
+        closeModal(detailModal);renderTools();
+      }
+    };
+
+    document.getElementById("searchBar").oninput=()=>{
+      const q=document.getElementById("searchBar").value.toLowerCase();
+      document.querySelectorAll(".tool-card").forEach(c=>{
+        c.style.display=c.innerText.toLowerCase().includes(q)?"flex":"none";
+      });
+    };
+
+    document.getElementById("exportBtn").onclick=()=>{
+      const blob=new Blob([JSON.stringify(tools,null,2)],{type:"application/json"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");a.href=url;a.download="tools.json";a.click();
+      URL.revokeObjectURL(url);
+    };
+    document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
+    document.getElementById("importFile").onchange=e=>{
+      const file=e.target.files[0];
+      if(file){const r=new FileReader();
+        r.onload=()=>{try{const arr=JSON.parse(r.result);if(!Array.isArray(arr))throw 0;tools=arr;localStorage.setItem("tools",JSON.stringify(tools));renderTools();}catch{alert("Invalid file");}};
+        r.readAsText(file);
+      }
+    };
+
+    function setupVoice(btnId,targetId){
+      const b=document.getElementById(btnId);
+      b.onclick=()=>{
+        if(!("webkitSpeechRecognition"in window)){alert("Speech not supported");return;}
+        const rec=new webkitSpeechRecognition();rec.lang="en-US";rec.start();
+        rec.onresult=e=>{document.getElementById(targetId).value=e.results[0][0].transcript;};
+      };
+    }
+    setupVoice("voiceName","toolName");
+    setupVoice("voiceLocation","toolLocation");
+    setupVoice("voiceNotes","toolNotes");
+    document.getElementById("voiceSearchBtn").onclick=()=>{
+      if(!("webkitSpeechRecognition"in window)){alert("Speech not supported");return;}
+      const rec=new webkitSpeechRecognition();rec.lang="en-US";rec.start();
+      rec.onresult=e=>{
+        const term=e.results[0][0].transcript.toLowerCase();
+        document.getElementById("searchBar").value=term;
+        document.getElementById("searchBar").oninput();
+      };
+    };
+
+    renderTools();
+  </script>
+</body>
+</html>
+Add app index.html
