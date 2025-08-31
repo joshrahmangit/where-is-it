@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>What is it? Where is it?</title>
+  <title>Where is it</title>
   <style>
     body { font-family: sans-serif; margin: 20px; background: #f9fafb; }
     h1 { text-align: center; }
@@ -23,23 +23,23 @@
   </style>
 </head>
 <body>
-  <h1>What is it? Where is it?</h1>
+  <h1>Where is it</h1>
   <div class="toolbar">
-    <input id="searchBar" placeholder="Search tool by name...">
+    <input id="searchBar" placeholder="Search item by name...">
     <button id="voiceSearchBtn" class="voice-btn" title="Speak search">🎤</button>
-    <button id="addBtn" class="primary">Add Tool</button>
+    <button id="addBtn" class="primary">Add Item</button>
     <button id="exportBtn">Export</button>
     <button id="importBtn">Import</button>
     <input type="file" id="importFile" style="display:none"/>
   </div>
   <div id="toolList"></div>
 
-  <!-- Add/Edit Tool Modal -->
+  <!-- Add/Edit Item Modal -->
   <div class="modal" id="toolModal">
     <div class="modal-content">
-      <h2 id="modalTitle">Add Tool</h2>
+      <h2 id="modalTitle">Add Item</h2>
       <form id="toolForm">
-        <label>Tool name:<br>
+        <label>Item name:<br>
           <input type="text" id="toolName" required> <button type="button" class="voice-btn" id="voiceName" title="Speak name">🎤</button>
         </label><br><br>
         <label>Location:<br>
@@ -58,7 +58,7 @@
     </div>
   </div>
 
-  <!-- Tool Detail Modal -->
+  <!-- Item Detail Modal -->
   <div class="modal" id="detailModal">
     <div class="modal-content">
       <h2 id="detailName"></h2>
@@ -112,7 +112,7 @@
     document.getElementById("addBtn").onclick=()=>{
       editingIndex=null;
       document.getElementById("toolForm").reset();
-      document.getElementById("modalTitle").innerText="Add Tool";
+      document.getElementById("modalTitle").innerText="Add Item";
       showModal(toolModal);
     };
     document.getElementById("cancelBtn").onclick=()=>closeModal(toolModal);
@@ -162,7 +162,7 @@
       if(viewingIndex==null)return;
       const t=tools[viewingIndex];
       editingIndex=viewingIndex;
-      document.getElementById("modalTitle").innerText="Edit Tool";
+      document.getElementById("modalTitle").innerText="Edit Item";
       document.getElementById("toolName").value=t.name||"";
       document.getElementById("toolLocation").value=t.location||"";
       document.getElementById("toolNotes").value=t.notes||"";
@@ -189,7 +189,7 @@
     document.getElementById("exportBtn").onclick=()=>{
       const blob=new Blob([JSON.stringify(tools,null,2)],{type:"application/json"});
       const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download="tools.json";a.click();
+      const a=document.createElement("a");a.href=url;a.download="items.json";a.click();
       URL.revokeObjectURL(url);
     };
     document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
@@ -226,4 +226,4 @@
   </script>
 </body>
 </html>
-Add app index.html
+Rename app + Add Item + Item name
