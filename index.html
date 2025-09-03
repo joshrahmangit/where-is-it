@@ -15,6 +15,7 @@
     button { padding: 8px 12px; font-size: 1em; cursor: pointer; }
     .danger { background:#fee2e2; border:1px solid #ef4444; color:#991b1b; }
     .primary { background:#dcfce7; border:1px solid #22c55e; color:#065f46; }
+    .secondary { background:#eef2ff; border:1px solid #6366f1; color:#1e3a8a; }
     .tool-card { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; border-radius: 6px; background: #fff; }
     .tool-card img { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; background:#e5e7eb; }
     .tool-info { flex: 1; }
@@ -25,6 +26,7 @@
     .muted { color:#6b7280; font-size:12px; }
     .hint { color:#374151; font-size:12px; margin-top:6px; }
     .spinner { display:none; margin-left: 8px; font-size: 12px; color:#374151; }
+    .file-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   </style>
 </head>
 <body>
@@ -54,13 +56,19 @@
           <textarea id="toolNotes"></textarea> <button type="button" class="voice-btn" id="voiceNotes" title="Speak notes">🎤</button>
         </label><br><br>
 
-        <!-- Camera/library input with capture hint -->
-        <label>Photo:<br>
-          <input type="file" id="toolImage" accept="image/*" capture="environment">
-        </label>
-        <div class="hint">Tip: On Android this opens the back camera. On iPhone use Photo Library or Camera.</div>
+        <!-- New: two options for photo source -->
+        <div>Photo:</div>
+        <div class="file-row">
+          <button type="button" id="btnTakePhoto" class="secondary">Take Photo</button>
+          <button type="button" id="btnChoosePhoto">Choose from Library</button>
+          <span id="chosenFileName" class="muted"></span>
+        </div>
+        <!-- Hidden inputs: one with capture for camera, one without for library -->
+        <input type="file" id="toolImageCamera" accept="image/*" capture="environment" style="display:none">
+        <input type="file" id="toolImageLibrary" accept="image/*" style="display:none">
+        <div class="hint">On Android, “Take Photo” opens the camera. “Choose from Library” lets you pick existing photos.</div>
 
-        <div class="muted">Leave photo empty when editing to keep the current picture.</div>
+        <div class="muted" style="margin-top:6px;">Leave photo empty when editing to keep the current picture.</div>
         <div class="modal-actions">
           <button type="submit" class="primary" id="saveBtn">Save</button>
           <span class="spinner" id="saveSpinner">Processing photo…</span>
@@ -135,12 +143,14 @@
     let tools = JSON.parse(localStorage.getItem("tools")||"[]"); // [{id, name, location, notes, imageThumb?}]
     let editingIndex = null;
     let viewingIndex = null;
+    let selectedFile = null; // NEW: holds whichever input (camera or library) user picked
 
     const toolList = document.getElementById("toolList");
     const toolModal = document.getElementById("toolModal");
     const detailModal = document.getElementById("detailModal");
     const saveBtn = document.getElementById("saveBtn");
     const saveSpinner = document.getElementById("saveSpinner");
+    const chosenFileName = document.getElementById("chosenFileName");
 
     /*** UI helpers ***/
     function showModal(m){ m.style.display="flex"; }
@@ -171,11 +181,27 @@
     /*** Open/Close modals ***/
     document.getElementById("addBtn").onclick=()=>{
       editingIndex=null;
+      selectedFile=null;
+      chosenFileName.textContent="";
       document.getElementById("toolForm").reset();
       document.getElementById("modalTitle").innerText="Add Item";
       showModal(toolModal);
     };
     document.getElementById("cancelBtn").onclick=()=>closeModal(toolModal);
+
+    /*** Photo source controls ***/
+    const inputCam = document.getElementById("toolImageCamera");
+    const inputLib = document.getElementById("toolImageLibrary");
+    document.getElementById("btnTakePhoto").onclick = ()=> inputCam.click();
+    document.getElementById("btnChoosePhoto").onclick = ()=> inputLib.click();
+    const handleFilePick = (e)=>{
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      selectedFile = f;
+      chosenFileName.textContent = f.name ? `Selected: ${f.name}` : "Selected photo";
+    };
+    inputCam.addEventListener('change', handleFilePick);
+    inputLib.addEventListener('change', handleFilePick);
 
     /*** Image processing (resize/compress) ***/
     function imageFileToCanvasBlob(file, maxDim=1280, quality=0.7){
@@ -213,10 +239,10 @@
       const name=document.getElementById("toolName").value.trim();
       const location=document.getElementById("toolLocation").value.trim();
       const notes=document.getElementById("toolNotes").value.trim();
-      const file=document.getElementById("toolImage").files[0];
+      const file=selectedFile; // use whichever source the user chose
+
       if(!name || !location){ alert("Please enter a name and a location."); return; }
 
-      // UI lock while processing
       saveBtn.disabled = true;
       saveSpinner.style.display = 'inline';
 
@@ -233,15 +259,12 @@
         if(editingIndex!=null){
           const prev = tools[editingIndex] || {};
           const id = prev.id || uid();
-          // Update metadata
           const updated = {
             ...prev,
             id, name, location, notes,
             imageThumb: (imageThumb !== null ? imageThumb : prev.imageThumb || null)
           };
           tools[editingIndex] = updated;
-
-          // If a new photo was chosen, overwrite blob in DB
           if(newBlob){ await putImage(id, newBlob); }
         } else {
           const id = uid();
@@ -255,10 +278,15 @@
         closeModal(toolModal);
       }catch(err){
         console.error(err);
-        alert("Sorry, the photo couldn't be saved. Try a smaller image or take a new picture.");
+        alert("Sorry, the photo couldn't be saved. Try a different image.");
       }finally{
         saveBtn.disabled = false;
         saveSpinner.style.display = 'none';
+        selectedFile = null;
+        chosenFileName.textContent = "";
+        // clear inputs to allow selecting same file again
+        inputCam.value = "";
+        inputLib.value = "";
       }
     };
 
@@ -271,7 +299,6 @@
       document.getElementById("detailNotes").innerText=t.notes || "";
       const di = document.getElementById("detailImage");
 
-      // Prefer full image from IndexedDB; fallback to thumb
       di.style.display = 'none';
       try{
         if(t.id){
@@ -304,11 +331,14 @@
       if(viewingIndex==null) return;
       const t=tools[viewingIndex];
       editingIndex=viewingIndex;
+      selectedFile=null;
+      chosenFileName.textContent="";
       document.getElementById("modalTitle").innerText="Edit Item";
       document.getElementById("toolName").value=t.name||"";
       document.getElementById("toolLocation").value=t.location||"";
       document.getElementById("toolNotes").value=t.notes||"";
-      document.getElementById("toolImage").value="";
+      inputCam.value="";
+      inputLib.value="";
       closeModal(detailModal);
       showModal(toolModal);
     };
@@ -332,13 +362,13 @@
       });
     };
 
-    /*** Export / Import (metadata only; images stay in this device's storage) ***/
+    /*** Export / Import (metadata only; images stay on each device) ***/
     document.getElementById("exportBtn").onclick=()=>{
       const blob=new Blob([JSON.stringify(tools,null,2)],{type:"application/json"});
       const url=URL.createObjectURL(blob);
       const a=document.createElement("a");a.href=url;a.download="where-is-it-backup.json";a.click();
       URL.revokeObjectURL(url);
-      alert("Exported item list. (Note: photos aren’t included in the file and stay on this device.)");
+      alert("Exported item list. (Note: photos aren’t included and stay on this device.)");
     };
     document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
     document.getElementById("importFile").onchange=e=>{
@@ -352,7 +382,7 @@
             tools=arr;
             localStorage.setItem("tools",JSON.stringify(tools));
             renderTools();
-            alert("Imported item list. (Photos must be re-added on this device.)");
+            alert("Imported item list. (Re-add photos on this device if needed.)");
           }catch{
             alert("Invalid file");
           }
