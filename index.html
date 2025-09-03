@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta name="theme-color" content="#0f172a" />
-<link rel="manifest" href="manifest.webmanifest" />
-<link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Where is it</title>
@@ -23,6 +23,8 @@
     .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap; }
     .voice-btn { background: #eee; border-radius: 50%; width: 32px; height: 32px; display: inline-flex; justify-content: center; align-items: center; margin-left: 4px; }
     .muted { color:#6b7280; font-size:12px; }
+    .hint { color:#374151; font-size:12px; margin-top:6px; }
+    .spinner { display:none; margin-left: 8px; font-size: 12px; color:#374151; }
   </style>
 </head>
 <body>
@@ -51,10 +53,17 @@
         <label>Notes:<br>
           <textarea id="toolNotes"></textarea> <button type="button" class="voice-btn" id="voiceNotes" title="Speak notes">🎤</button>
         </label><br><br>
-        <label>Photo:<br><input type="file" id="toolImage" accept="image/*"></label>
+
+        <!-- Camera/library input with capture hint -->
+        <label>Photo:<br>
+          <input type="file" id="toolImage" accept="image/*" capture="environment">
+        </label>
+        <div class="hint">Tip: On Android this opens the back camera. On iPhone use Photo Library or Camera.</div>
+
         <div class="muted">Leave photo empty when editing to keep the current picture.</div>
         <div class="modal-actions">
-          <button type="submit" class="primary">Save</button>
+          <button type="submit" class="primary" id="saveBtn">Save</button>
+          <span class="spinner" id="saveSpinner">Processing photo…</span>
           <button type="button" id="cancelBtn">Cancel</button>
         </div>
       </form>
@@ -80,21 +89,73 @@
   </div>
 
   <script>
-    let tools = JSON.parse(localStorage.getItem("tools")||"[]");
+    /*** Simple IndexedDB wrapper (stores big photo blobs safely) ***/
+    const DB_NAME = 'wiwi-db';
+    const DB_STORE = 'images';
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function putImage(id, blob) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(blob, id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    async function getImage(id) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function deleteImage(id) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    /*** State ***/
+    let tools = JSON.parse(localStorage.getItem("tools")||"[]"); // [{id, name, location, notes, imageThumb?}]
     let editingIndex = null;
     let viewingIndex = null;
 
     const toolList = document.getElementById("toolList");
     const toolModal = document.getElementById("toolModal");
     const detailModal = document.getElementById("detailModal");
+    const saveBtn = document.getElementById("saveBtn");
+    const saveSpinner = document.getElementById("saveSpinner");
 
+    /*** UI helpers ***/
+    function showModal(m){ m.style.display="flex"; }
+    function closeModal(m){ m.style.display="none"; }
+    function escapeHtml(s){ return (s||"").replace(/[&<>\"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' }[m])); }
+    function uid(){ return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8); }
+
+    /*** Render list ***/
     function renderTools(){
       toolList.innerHTML = "";
       tools.forEach((t,i)=>{
         const card = document.createElement("div");
         card.className = "tool-card";
         const img = document.createElement("img");
-        img.src = t.image||"";
+        img.src = t.imageThumb || "";
         img.alt = t.name?.[0] || "";
         const info = document.createElement("div");
         info.className = "tool-info";
@@ -107,11 +168,7 @@
       localStorage.setItem("tools", JSON.stringify(tools));
     }
 
-    function escapeHtml(s){ return (s||"").replace(/[&<>\"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' }[m])); }
-
-    function showModal(m){ m.style.display="flex"; }
-    function closeModal(m){ m.style.display="none"; }
-
+    /*** Open/Close modals ***/
     document.getElementById("addBtn").onclick=()=>{
       editingIndex=null;
       document.getElementById("toolForm").reset();
@@ -120,49 +177,131 @@
     };
     document.getElementById("cancelBtn").onclick=()=>closeModal(toolModal);
 
-    document.getElementById("toolForm").onsubmit=e=>{
+    /*** Image processing (resize/compress) ***/
+    function imageFileToCanvasBlob(file, maxDim=1280, quality=0.7){
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Failed to read image"));
+        reader.onload = () => {
+          img.onload = () => {
+            try{
+              const {width, height} = img;
+              const scale = Math.min(1, maxDim / Math.max(width, height));
+              const w = Math.round(width * scale);
+              const h = Math.round(height * scale);
+              const canvas = document.createElement('canvas');
+              canvas.width = w; canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, w, h);
+              canvas.toBlob(blob => {
+                if(!blob) return reject(new Error("Failed to encode image"));
+                resolve({blob, dataURL: canvas.toDataURL('image/jpeg', 0.5)}); // small thumb
+              }, 'image/jpeg', quality);
+            }catch(e){ reject(e); }
+          };
+          img.onerror = () => reject(new Error("Invalid image"));
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    /*** Save (Add/Edit) ***/
+    document.getElementById("toolForm").onsubmit=async (e)=>{
       e.preventDefault();
       const name=document.getElementById("toolName").value.trim();
       const location=document.getElementById("toolLocation").value.trim();
       const notes=document.getElementById("toolNotes").value.trim();
       const file=document.getElementById("toolImage").files[0];
       if(!name || !location){ alert("Please enter a name and a location."); return; }
-      if(file){
-        const r=new FileReader();
-        r.onload=()=>doSave(name,location,notes,r.result);
-        r.readAsDataURL(file);
-      } else {
-        doSave(name,location,notes,null);
+
+      // UI lock while processing
+      saveBtn.disabled = true;
+      saveSpinner.style.display = 'inline';
+
+      try{
+        let imageThumb = null;
+        let newBlob = null;
+
+        if(file){
+          const processed = await imageFileToCanvasBlob(file, 1280, 0.7);
+          newBlob = processed.blob;            // compressed big photo
+          imageThumb = processed.dataURL;      // small dataURL for list/detail preview
+        }
+
+        if(editingIndex!=null){
+          const prev = tools[editingIndex] || {};
+          const id = prev.id || uid();
+          // Update metadata
+          const updated = {
+            ...prev,
+            id, name, location, notes,
+            imageThumb: (imageThumb !== null ? imageThumb : prev.imageThumb || null)
+          };
+          tools[editingIndex] = updated;
+
+          // If a new photo was chosen, overwrite blob in DB
+          if(newBlob){ await putImage(id, newBlob); }
+        } else {
+          const id = uid();
+          const item = { id, name, location, notes, imageThumb };
+          tools.push(item);
+          if(newBlob){ await putImage(id, newBlob); }
+        }
+
+        localStorage.setItem("tools", JSON.stringify(tools));
+        renderTools();
+        closeModal(toolModal);
+      }catch(err){
+        console.error(err);
+        alert("Sorry, the photo couldn't be saved. Try a smaller image or take a new picture.");
+      }finally{
+        saveBtn.disabled = false;
+        saveSpinner.style.display = 'none';
       }
     };
 
-    function doSave(name,location,notes,imgData){
-      if(editingIndex!=null){
-        const prev=tools[editingIndex]||{};
-        tools[editingIndex]={...prev,name,location,notes,image:(imgData!==null?imgData:prev.image||null)};
-      } else {
-        tools.push({name,location,notes,image:imgData});
-      }
-      localStorage.setItem("tools", JSON.stringify(tools));
-      renderTools();
-      closeModal(toolModal);
-    }
-
-    function showDetail(i){
-      viewingIndex=i;
+    /*** Detail view ***/
+    async function showDetail(i){
+      viewingIndex = i;
       const t=tools[i];
-      document.getElementById("detailName").innerText=t.name||"";
-      document.getElementById("detailLocation").innerText=t.location||"";
-      document.getElementById("detailNotes").innerText=t.notes||"";
-      const di=document.getElementById("detailImage");
-      if(t.image){ di.src=t.image; di.style.display="block"; } else { di.style.display="none"; }
+      document.getElementById("detailName").innerText=t.name || "";
+      document.getElementById("detailLocation").innerText=t.location || "";
+      document.getElementById("detailNotes").innerText=t.notes || "";
+      const di = document.getElementById("detailImage");
+
+      // Prefer full image from IndexedDB; fallback to thumb
+      di.style.display = 'none';
+      try{
+        if(t.id){
+          const blob = await getImage(t.id);
+          if(blob){
+            const url = URL.createObjectURL(blob);
+            di.src = url;
+            di.onload = () => URL.revokeObjectURL(url);
+            di.style.display = "block";
+          } else if(t.imageThumb){
+            di.src = t.imageThumb; di.style.display="block";
+          }
+        } else if(t.imageThumb){
+          di.src = t.imageThumb; di.style.display="block";
+        }
+      }catch{
+        if(t.imageThumb){ di.src = t.imageThumb; di.style.display="block"; }
+      }
+
       showModal(detailModal);
     }
     document.getElementById("closeDetailBtn").onclick=()=>closeModal(detailModal);
-    document.getElementById("copyLocationBtn").onclick=()=>navigator.clipboard.writeText(document.getElementById("detailLocation").innerText);
+    document.getElementById("copyLocationBtn").onclick=()=>{
+      navigator.clipboard.writeText(document.getElementById("detailLocation").innerText);
+      alert("Location copied!");
+    };
 
+    /*** Edit/Delete from detail ***/
     document.getElementById("editBtn").onclick=()=>{
-      if(viewingIndex==null)return;
+      if(viewingIndex==null) return;
       const t=tools[viewingIndex];
       editingIndex=viewingIndex;
       document.getElementById("modalTitle").innerText="Edit Item";
@@ -173,41 +312,60 @@
       closeModal(detailModal);
       showModal(toolModal);
     };
-    document.getElementById("deleteBtn").onclick=()=>{
-      if(viewingIndex==null)return;
-      if(confirm(`Delete "${tools[viewingIndex].name}"?`)){
+    document.getElementById("deleteBtn").onclick=async ()=>{
+      if(viewingIndex==null) return;
+      const t=tools[viewingIndex];
+      if(confirm(`Delete "${t.name}"?`)){
         tools.splice(viewingIndex,1);
         localStorage.setItem("tools", JSON.stringify(tools));
-        closeModal(detailModal);renderTools();
+        if(t.id){ try{ await deleteImage(t.id); }catch{} }
+        closeModal(detailModal);
+        renderTools();
       }
     };
 
+    /*** Search ***/
     document.getElementById("searchBar").oninput=()=>{
       const q=document.getElementById("searchBar").value.toLowerCase();
-      document.querySelectorAll(".tool-card").forEach(c=>{
-        c.style.display=c.innerText.toLowerCase().includes(q)?"flex":"none";
+      document.querySelectorAll(".tool-card").forEach(card=>{
+        card.style.display = card.innerText.toLowerCase().includes(q) ? "flex" : "none";
       });
     };
 
+    /*** Export / Import (metadata only; images stay in this device's storage) ***/
     document.getElementById("exportBtn").onclick=()=>{
       const blob=new Blob([JSON.stringify(tools,null,2)],{type:"application/json"});
       const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download="items.json";a.click();
+      const a=document.createElement("a");a.href=url;a.download="where-is-it-backup.json";a.click();
       URL.revokeObjectURL(url);
+      alert("Exported item list. (Note: photos aren’t included in the file and stay on this device.)");
     };
     document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
     document.getElementById("importFile").onchange=e=>{
       const file=e.target.files[0];
-      if(file){const r=new FileReader();
-        r.onload=()=>{try{const arr=JSON.parse(r.result);if(!Array.isArray(arr))throw 0;tools=arr;localStorage.setItem("tools",JSON.stringify(tools));renderTools();}catch{alert("Invalid file");}};
+      if(file){
+        const r=new FileReader();
+        r.onload=()=>{
+          try{
+            const arr=JSON.parse(r.result);
+            if(!Array.isArray(arr)) throw 0;
+            tools=arr;
+            localStorage.setItem("tools",JSON.stringify(tools));
+            renderTools();
+            alert("Imported item list. (Photos must be re-added on this device.)");
+          }catch{
+            alert("Invalid file");
+          }
+        };
         r.readAsText(file);
       }
     };
 
+    /*** Voice input & search ***/
     function setupVoice(btnId,targetId){
       const b=document.getElementById(btnId);
       b.onclick=()=>{
-        if(!("webkitSpeechRecognition"in window)){alert("Speech not supported");return;}
+        if(!("webkitSpeechRecognition" in window)){alert("Speech not supported");return;}
         const rec=new webkitSpeechRecognition();rec.lang="en-US";rec.start();
         rec.onresult=e=>{document.getElementById(targetId).value=e.results[0][0].transcript;};
       };
@@ -225,7 +383,15 @@
       };
     };
 
+    /*** Initial render ***/
     renderTools();
+  </script>
+
+  <!-- Service worker register (keep at very end) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+    }
   </script>
 </body>
 </html>
