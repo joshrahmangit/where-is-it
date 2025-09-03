@@ -1,8 +1,9 @@
 {
   "name": "Where is it",
   "short_name": "Where is it",
-  "description": "A simple app to keep track of items in the garage with notes, photos, and locations.",
+  "description": "Quickly store and find items with photos, notes, and locations.",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f9fafb",
   "theme_color": "#0f172a",
